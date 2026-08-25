@@ -103,24 +103,98 @@ export function useSpotifyPlayer(
   );
 
   useEffect(() => {
+    let cancelled = false;
+    let effectPlayer: Spotify.Player | null = null;
+
     if (!enabled) {
       playerRef.current?.disconnect();
       playerRef.current = null;
-      return;
-    }
+    } else {
+      void loadSpotifySdk()
+        .then((spotify) => {
+          if (cancelled) return;
 
-    let cancelled = false;
-    void loadSpotifySdk()
-      .then((spotify) => {
-        if (cancelled) return;
+          setState((current) => ({
+            ...current,
+            error: null,
+            status: 'loading',
+          }));
 
-        setState((current) => ({
-          ...current,
-          error: null,
-          status: 'loading',
-        }));
+          const reportError = (error: unknown) => {
+            if (cancelled) return;
+            setState((current) => ({
+              ...current,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Spotify no pudo inicializarse.',
+              isPlaying: false,
+              status: 'error',
+            }));
+          };
 
-        const reportError = (error: unknown) => {
+          const player = new spotify.Player({
+            name: 'Cassette Player',
+            volume: 0.72,
+            getOAuthToken: (callback) => {
+              void getValidSpotifyAccessToken()
+                .then((token) => callback(token ?? ''))
+                .catch((error: unknown) => {
+                  callback('');
+                  reportError(error);
+                });
+            },
+          });
+          effectPlayer = player;
+          playerRef.current = player;
+
+          player.addListener('ready', ({ device_id: deviceId }) => {
+            setState((current) => ({
+              ...current,
+              deviceId,
+              error: null,
+              status: 'ready',
+            }));
+          });
+          player.addListener('not_ready', () => {
+            setState((current) => ({
+              ...current,
+              isPlaying: false,
+              status: 'offline',
+            }));
+          });
+          player.addListener('player_state_changed', (playbackState) => {
+            if (!playbackState) return;
+            const nextState = mapPlaybackState(playbackState);
+            setState((current) => ({
+              ...current,
+              ...nextState,
+              autoplayBlocked: false,
+            }));
+            notifyTrackChange(nextState.currentTrack, nextState.isPlaying);
+          });
+          player.addListener('autoplay_failed', () => {
+            setState((current) => ({
+              ...current,
+              autoplayBlocked: true,
+              isPlaying: false,
+            }));
+          });
+
+          const onError = ({ message }: Spotify.WebPlaybackError) => {
+            reportError(new Error(message));
+          };
+          player.addListener('initialization_error', onError);
+          player.addListener('authentication_error', onError);
+          player.addListener('account_error', onError);
+          player.addListener('playback_error', onError);
+          return player.connect().then((connected) => {
+            if (!connected) {
+              throw new Error('No se pudo conectar el reproductor de Spotify.');
+            }
+          });
+        })
+        .catch((error: unknown) => {
           if (cancelled) return;
           setState((current) => ({
             ...current,
@@ -131,84 +205,12 @@ export function useSpotifyPlayer(
             isPlaying: false,
             status: 'error',
           }));
-        };
-
-        const player = new spotify.Player({
-          name: 'Cassette Player',
-          volume: 0.72,
-          getOAuthToken: (callback) => {
-            void getValidSpotifyAccessToken()
-              .then((token) => callback(token ?? ''))
-              .catch((error: unknown) => {
-                callback('');
-                reportError(error);
-              });
-          },
         });
-        playerRef.current = player;
-
-        player.addListener('ready', ({ device_id: deviceId }) => {
-          setState((current) => ({
-            ...current,
-            deviceId,
-            error: null,
-            status: 'ready',
-          }));
-        });
-        player.addListener('not_ready', () => {
-          setState((current) => ({
-            ...current,
-            isPlaying: false,
-            status: 'offline',
-          }));
-        });
-        player.addListener('player_state_changed', (playbackState) => {
-          if (!playbackState) return;
-          const nextState = mapPlaybackState(playbackState);
-          setState((current) => ({
-            ...current,
-            ...nextState,
-            autoplayBlocked: false,
-          }));
-          notifyTrackChange(nextState.currentTrack, nextState.isPlaying);
-        });
-        player.addListener('autoplay_failed', () => {
-          setState((current) => ({
-            ...current,
-            autoplayBlocked: true,
-            isPlaying: false,
-          }));
-        });
-
-        const onError = ({ message }: Spotify.WebPlaybackError) => {
-          reportError(new Error(message));
-        };
-        player.addListener('initialization_error', onError);
-        player.addListener('authentication_error', onError);
-        player.addListener('account_error', onError);
-        player.addListener('playback_error', onError);
-        return player.connect().then((connected) => {
-          if (!connected) {
-            throw new Error('No se pudo conectar el reproductor de Spotify.');
-          }
-        });
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        setState((current) => ({
-          ...current,
-          error:
-            error instanceof Error
-              ? error.message
-              : 'Spotify no pudo inicializarse.',
-          isPlaying: false,
-          status: 'error',
-        }));
-      });
+    }
 
     return () => {
       cancelled = true;
-      const player = playerRef.current;
+      const player = effectPlayer;
       if (!player) return;
       player.removeListener('ready');
       player.removeListener('not_ready');
@@ -219,7 +221,9 @@ export function useSpotifyPlayer(
       player.removeListener('account_error');
       player.removeListener('playback_error');
       player.disconnect();
-      playerRef.current = null;
+      if (playerRef.current === player) {
+        playerRef.current = null;
+      }
     };
   }, [enabled]);
 

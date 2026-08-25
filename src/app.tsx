@@ -67,6 +67,31 @@ type SpotifySessionStatus =
 
 type SpotifyLibraryStatus = 'idle' | 'loading' | 'ready' | 'error';
 
+type SpotifyState = {
+  sessionStatus: SpotifySessionStatus;
+  accessToken: string | null;
+  spotifyTapes: Tape[];
+  libraryStatus: SpotifyLibraryStatus;
+  profileName: string | null;
+  spotifyError: string | null;
+};
+
+type SpotifyAction =
+  | { type: 'session-initialized'; accessToken: string | null }
+  | {
+      type: 'session-failed';
+      sessionStatus: 'error' | 'unconfigured';
+      error: string;
+    }
+  | { type: 'library-loaded'; spotifyTapes: Tape[]; profileName: string }
+  | { type: 'library-failed'; error: string }
+  | { type: 'login-started' }
+  | {
+      type: 'disconnected';
+      sessionStatus: 'disconnected' | 'unconfigured';
+    }
+  | { type: 'error-changed'; error: string | null };
+
 const initialPlayerState: PlayerState = {
   tapeIndex: 0,
   trackIndex: 0,
@@ -113,6 +138,70 @@ function playerReducer(state: PlayerState, action: PlayerAction): PlayerState {
       return { ...state, ejected: !state.ejected, motion: null };
     case 'close-deck':
       return { ...state, ejected: false };
+  }
+}
+
+function createInitialSpotifyState(configured: boolean): SpotifyState {
+  return {
+    sessionStatus: configured ? 'checking' : 'unconfigured',
+    accessToken: null,
+    spotifyTapes: [],
+    libraryStatus: 'idle',
+    profileName: null,
+    spotifyError: null,
+  };
+}
+
+function spotifyReducer(
+  state: SpotifyState,
+  action: SpotifyAction,
+): SpotifyState {
+  switch (action.type) {
+    case 'session-initialized':
+      return {
+        ...state,
+        accessToken: action.accessToken,
+        sessionStatus: action.accessToken ? 'connected' : 'disconnected',
+        libraryStatus: action.accessToken
+          ? state.libraryStatus === 'idle'
+            ? 'loading'
+            : state.libraryStatus
+          : 'idle',
+      };
+    case 'session-failed':
+      return {
+        ...state,
+        sessionStatus: action.sessionStatus,
+        spotifyError: action.error,
+      };
+    case 'library-loaded':
+      return {
+        ...state,
+        spotifyTapes: action.spotifyTapes,
+        profileName: action.profileName,
+        libraryStatus: 'ready',
+      };
+    case 'library-failed':
+      return {
+        ...state,
+        libraryStatus: 'error',
+        spotifyError: action.error,
+      };
+    case 'login-started':
+      return { ...state, sessionStatus: 'checking', spotifyError: null };
+    case 'disconnected':
+      return {
+        sessionStatus: action.sessionStatus,
+        accessToken: null,
+        spotifyTapes: [],
+        libraryStatus: 'idle',
+        profileName: null,
+        spotifyError: null,
+      };
+    case 'error-changed':
+      return state.spotifyError === action.error
+        ? state
+        : { ...state, spotifyError: action.error };
   }
 }
 
@@ -342,15 +431,19 @@ function ProviderModal({
 function App() {
   const [playerState, dispatch] = useReducer(playerReducer, initialPlayerState);
   const spotifyConfigured = getSpotifyConfig() !== null;
-  const [sessionStatus, setSessionStatus] = useState<SpotifySessionStatus>(
-    () => (spotifyConfigured ? 'checking' : 'unconfigured'),
+  const [spotifyState, spotifyDispatch] = useReducer(
+    spotifyReducer,
+    spotifyConfigured,
+    createInitialSpotifyState,
   );
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [spotifyTapes, setSpotifyTapes] = useState<Tape[]>([]);
-  const [libraryStatus, setLibraryStatus] =
-    useState<SpotifyLibraryStatus>('idle');
-  const [profileName, setProfileName] = useState<string | null>(null);
-  const [spotifyError, setSpotifyError] = useState<string | null>(null);
+  const {
+    sessionStatus,
+    accessToken,
+    spotifyTapes,
+    libraryStatus,
+    profileName,
+    spotifyError,
+  } = spotifyState;
   const [modalOpen, setModalOpen] = useState(false);
   const [favorite, setFavorite] = useState(false);
   const [dolby, setDolby] = useState(true);
@@ -391,18 +484,18 @@ function App() {
     void initializeSpotifySession()
       .then((token) => {
         if (cancelled) return;
-        setAccessToken(token);
-        setSessionStatus(token ? 'connected' : 'disconnected');
-        setLibraryStatus((current) =>
-          token ? (current === 'idle' ? 'loading' : current) : 'idle',
-        );
+        spotifyDispatch({ type: 'session-initialized', accessToken: token });
       })
       .catch((error: unknown) => {
         if (cancelled) return;
-        setSpotifyError(
-          error instanceof Error ? error.message : 'Spotify rechazó la sesión.',
-        );
-        setSessionStatus('error');
+        spotifyDispatch({
+          type: 'session-failed',
+          sessionStatus: 'error',
+          error:
+            error instanceof Error
+              ? error.message
+              : 'Spotify rechazó la sesión.',
+        });
       });
 
     return () => {
@@ -419,19 +512,22 @@ function App() {
       getSpotifyProfile(controller.signal),
     ])
       .then(([albums, profile]) => {
-        setSpotifyTapes(albums);
-        setProfileName(profile.display_name ?? profile.id);
-        setLibraryStatus('ready');
+        spotifyDispatch({
+          type: 'library-loaded',
+          spotifyTapes: albums,
+          profileName: profile.display_name ?? profile.id,
+        });
         dispatch({ type: 'select-tape', tapeIndex: 0 });
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
-        setLibraryStatus('error');
-        setSpotifyError(
-          error instanceof Error
-            ? error.message
-            : 'No se pudo cargar tu biblioteca.',
-        );
+        spotifyDispatch({
+          type: 'library-failed',
+          error:
+            error instanceof Error
+              ? error.message
+              : 'No se pudo cargar tu biblioteca.',
+        });
       });
 
     return () => controller.abort();
@@ -508,20 +604,21 @@ function App() {
   }
 
   function showSpotifyConnection(message?: string) {
-    if (message) setSpotifyError(message);
+    if (message) spotifyDispatch({ type: 'error-changed', error: message });
     setModalOpen(true);
   }
 
   async function connect() {
-    setSpotifyError(null);
-    setSessionStatus('checking');
+    spotifyDispatch({ type: 'login-started' });
     try {
       await beginSpotifyLogin();
     } catch (error) {
-      setSessionStatus(spotifyConfigured ? 'error' : 'unconfigured');
-      setSpotifyError(
-        error instanceof Error ? error.message : 'No se pudo abrir Spotify.',
-      );
+      spotifyDispatch({
+        type: 'session-failed',
+        sessionStatus: spotifyConfigured ? 'error' : 'unconfigured',
+        error:
+          error instanceof Error ? error.message : 'No se pudo abrir Spotify.',
+      });
     }
   }
 
@@ -530,12 +627,10 @@ function App() {
     cancelPlaybackOperation();
     void spotifyPlayer.pause();
     disconnectSpotify();
-    setAccessToken(null);
-    setSpotifyTapes([]);
-    setProfileName(null);
-    setSpotifyError(null);
-    setLibraryStatus('idle');
-    setSessionStatus(spotifyConfigured ? 'disconnected' : 'unconfigured');
+    spotifyDispatch({
+      type: 'disconnected',
+      sessionStatus: spotifyConfigured ? 'disconnected' : 'unconfigured',
+    });
     dispatch({ type: 'select-tape', tapeIndex: 0 });
   }
 
@@ -561,7 +656,7 @@ function App() {
     }
 
     try {
-      setSpotifyError(null);
+      spotifyDispatch({ type: 'error-changed', error: null });
       requestedTrackUri.current = nextTrack.spotifyUri;
       await playSpotifyTrack(
         spotifyPlayer.deviceId,
@@ -593,7 +688,7 @@ function App() {
 
     const controller = beginPlaybackOperation();
     try {
-      setSpotifyError(null);
+      spotifyDispatch({ type: 'error-changed', error: null });
       await spotifyPlayer.activate();
       if (!isCurrentPlaybackOperation(controller)) return;
       if (!currentTrackMatches) {
