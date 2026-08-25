@@ -11,6 +11,7 @@ export const tapes: Tape[] = [
     accent: '#df582e',
     ink: '#272019',
     coverClass: 'cover-sunset',
+    source: 'demo',
     tracks: [
       {
         id: 'warm-air',
@@ -48,6 +49,7 @@ export const tapes: Tape[] = [
     accent: '#db2f39',
     ink: '#f4e7c7',
     coverClass: 'cover-night',
+    source: 'demo',
     tracks: [
       {
         id: 'red-phone',
@@ -85,6 +87,7 @@ export const tapes: Tape[] = [
     accent: '#2e7a73',
     ink: '#182b29',
     coverClass: 'cover-pool',
+    source: 'demo',
     tracks: [
       {
         id: 'open-water',
@@ -122,6 +125,7 @@ export const tapes: Tape[] = [
     accent: '#8e9d52',
     ink: '#282d1c',
     coverClass: 'cover-field',
+    source: 'demo',
     tracks: [
       {
         id: 'north',

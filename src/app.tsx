@@ -1,6 +1,5 @@
 import {
   useEffect,
-  useMemo,
   useReducer,
   useRef,
   useState,
@@ -25,8 +24,24 @@ import {
   Volume2,
   X,
 } from 'lucide-react';
-import { tapes } from './data/library';
+import { tapes as demoTapes } from './data/library';
 import { formatTime, getNextIndex, getProgress } from './lib/player';
+import {
+  beginSpotifyLogin,
+  disconnectSpotify,
+  getSpotifyConfig,
+  initializeSpotifySession,
+} from './lib/spotify-auth';
+import {
+  getSpotifyProfile,
+  getSpotifySavedAlbums,
+  playSpotifyTrack,
+  setSpotifyShuffle,
+} from './lib/spotify-api';
+import {
+  useSpotifyPlayer,
+  type SpotifyPlaybackTrack,
+} from './lib/use-spotify-player';
 import type { Tape } from './types';
 
 type MotionDirection = 'forward' | 'backward' | null;
@@ -34,45 +49,33 @@ type MotionDirection = 'forward' | 'backward' | null;
 type PlayerState = {
   tapeIndex: number;
   trackIndex: number;
-  isPlaying: boolean;
-  currentTime: number;
   motion: MotionDirection;
   ejected: boolean;
 };
 
 type PlayerAction =
-  | { type: 'toggle-play' }
-  | { type: 'tick'; duration: number; trackCount: number }
   | { type: 'cue-start'; direction: 1 | -1 }
+  | { type: 'cue-cancel' }
   | { type: 'cue-complete'; direction: 1 | -1; trackCount: number }
   | { type: 'select-tape'; tapeIndex: number }
+  | { type: 'sync-track'; tapeIndex: number; trackIndex: number }
   | { type: 'toggle-eject' }
-  | { type: 'seek'; time: number };
+  | { type: 'close-deck' };
+
+type SpotifySessionStatus =
+  'checking' | 'unconfigured' | 'disconnected' | 'connected' | 'error';
+
+type SpotifyLibraryStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 const initialPlayerState: PlayerState = {
   tapeIndex: 0,
   trackIndex: 0,
-  isPlaying: false,
-  currentTime: 42,
   motion: null,
   ejected: false,
 };
 
 function playerReducer(state: PlayerState, action: PlayerAction): PlayerState {
   switch (action.type) {
-    case 'toggle-play':
-      return state.ejected ? state : { ...state, isPlaying: !state.isPlaying };
-    case 'tick': {
-      if (!state.isPlaying || state.ejected || state.motion) return state;
-      if (state.currentTime + 1 >= action.duration) {
-        return {
-          ...state,
-          trackIndex: getNextIndex(state.trackIndex, action.trackCount, 1),
-          currentTime: 0,
-        };
-      }
-      return { ...state, currentTime: state.currentTime + 1 };
-    }
     case 'cue-start':
       if (state.ejected || state.motion) return state;
       return {
@@ -87,21 +90,29 @@ function playerReducer(state: PlayerState, action: PlayerAction): PlayerState {
           action.trackCount,
           action.direction,
         ),
-        currentTime: 0,
         motion: null,
       };
+    case 'cue-cancel':
+      return { ...state, motion: null };
     case 'select-tape':
       return {
         ...state,
         tapeIndex: action.tapeIndex,
         trackIndex: 0,
-        currentTime: 0,
+        ejected: false,
+        motion: null,
+      };
+    case 'sync-track':
+      return {
+        ...state,
+        tapeIndex: action.tapeIndex,
+        trackIndex: action.trackIndex,
         ejected: false,
       };
     case 'toggle-eject':
-      return { ...state, ejected: !state.ejected, isPlaying: false };
-    case 'seek':
-      return { ...state, currentTime: action.time };
+      return { ...state, ejected: !state.ejected, motion: null };
+    case 'close-deck':
+      return { ...state, ejected: false };
   }
 }
 
@@ -120,11 +131,17 @@ function AlbumArt({
     <div
       className={`album-art ${tape.coverClass} ${compact ? 'is-compact' : ''}`}
     >
-      <span className="album-art__sun" />
-      <span className="album-art__line line-one" />
-      <span className="album-art__line line-two" />
-      <span className="album-art__title">{tape.title}</span>
-      <span className="album-art__artist">{tape.artist}</span>
+      {tape.artworkUrl ? (
+        <img className="album-art__image" src={tape.artworkUrl} alt="" />
+      ) : (
+        <>
+          <span className="album-art__sun" />
+          <span className="album-art__line line-one" />
+          <span className="album-art__line line-two" />
+          <span className="album-art__title">{tape.title}</span>
+          <span className="album-art__artist">{tape.artist}</span>
+        </>
+      )}
     </div>
   );
 }
@@ -224,14 +241,39 @@ function TransportButton({
 }
 
 function ProviderModal({
-  connected,
+  error,
+  libraryStatus,
   onConnect,
   onClose,
+  onDisconnect,
+  playerStatus,
+  profileName,
+  sessionStatus,
 }: {
-  connected: boolean;
+  error: string | null;
+  libraryStatus: SpotifyLibraryStatus;
   onConnect: () => void;
   onClose: () => void;
+  onDisconnect: () => void;
+  playerStatus: string;
+  profileName: string | null;
+  sessionStatus: SpotifySessionStatus;
 }) {
+  const connected = sessionStatus === 'connected';
+  const busy = sessionStatus === 'checking';
+  const unconfigured = sessionStatus === 'unconfigured';
+  const detail = connected
+    ? playerStatus === 'ready'
+      ? `${profileName ?? 'Cuenta Premium'} · reproductor listo`
+      : libraryStatus === 'loading'
+        ? 'Sincronizando álbumes guardados'
+        : 'Preparando el reproductor del navegador'
+    : unconfigured
+      ? 'Faltan variables en .env.local'
+      : busy
+        ? 'Comprobando la sesión guardada'
+        : 'Cuenta Premium requerida';
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <dialog
@@ -249,14 +291,17 @@ function ProviderModal({
           <X size={18} />
         </button>
         <span className="eyebrow">SOURCE / AUX</span>
-        <h2 id="provider-title">Conecta tu estantería</h2>
+        <h2 id="provider-title">
+          {unconfigured ? 'Configura Spotify' : 'Conecta tu estantería'}
+        </h2>
         <p>
-          Trae tus álbumes y playlists. Nosotros ponemos el mecanismo, las
-          etiquetas y el delicioso sonido del botón al bajar.
+          Tus álbumes guardados se convierten en casetes y Spotify reproduce el
+          audio directamente en este navegador.
         </p>
         <button
           className={`provider-option ${connected ? 'is-connected' : ''}`}
-          onClick={onConnect}
+          onClick={connected ? onDisconnect : onConnect}
+          disabled={busy || unconfigured}
           type="button"
         >
           <span className="spotify-mark" aria-hidden="true">
@@ -264,12 +309,14 @@ function ProviderModal({
           </span>
           <span>
             <strong>
-              {connected ? 'Spotify conectado' : 'Continuar con Spotify'}
+              {connected
+                ? 'Spotify conectado'
+                : busy
+                  ? 'Comprobando Spotify'
+                  : 'Continuar con Spotify'}
             </strong>
             <small>
-              {connected
-                ? 'Biblioteca sincronizada'
-                : 'Álbumes, playlists y favoritos'}
+              {connected ? `${detail} · pulsa para desconectar` : detail}
             </small>
           </span>
           {connected ? (
@@ -278,10 +325,13 @@ function ProviderModal({
             <ChevronRight size={20} />
           )}
         </button>
-        <div className="provider-note">
+        <div className={`provider-note ${error ? 'is-error' : ''}`}>
           <Radio size={16} />
           <span>
-            Modo demostración: no se enviarán datos ni se abrirá OAuth.
+            {error ??
+              (unconfigured
+                ? 'Añade VITE_SPOTIFY_CLIENT_ID y VITE_SPOTIFY_REDIRECT_URI.'
+                : 'Spotify Premium es obligatorio para reproducir en el navegador.')}
           </span>
         </div>
       </dialog>
@@ -291,66 +341,361 @@ function ProviderModal({
 
 function App() {
   const [playerState, dispatch] = useReducer(playerReducer, initialPlayerState);
-  const [connected, setConnected] = useState(false);
+  const spotifyConfigured = getSpotifyConfig() !== null;
+  const [sessionStatus, setSessionStatus] = useState<SpotifySessionStatus>(
+    () => (spotifyConfigured ? 'checking' : 'unconfigured'),
+  );
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [spotifyTapes, setSpotifyTapes] = useState<Tape[]>([]);
+  const [libraryStatus, setLibraryStatus] =
+    useState<SpotifyLibraryStatus>('idle');
+  const [profileName, setProfileName] = useState<string | null>(null);
+  const [spotifyError, setSpotifyError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [favorite, setFavorite] = useState(false);
   const [dolby, setDolby] = useState(true);
-  const [shuffle, setShuffle] = useState(false);
   const [volume, setVolume] = useState(72);
   const motionTimer = useRef<number | null>(null);
+  const playbackController = useRef<AbortController | null>(null);
+  const requestedTrackUri = useRef<string | null>(null);
+  const ignoredTrackUri = useRef<string | null>(null);
+  const connected = sessionStatus === 'connected' && accessToken !== null;
+  const spotifyPlayer = useSpotifyPlayer(connected, handleSpotifyTrackChange);
+  const shuffle = spotifyPlayer.shuffle;
 
-  const { tapeIndex, trackIndex, isPlaying, currentTime, motion, ejected } =
-    playerState;
-
-  const tape = tapes[tapeIndex];
-  const track = tape.tracks[trackIndex];
-  const progress = getProgress(currentTime, track.duration);
+  const { tapeIndex, trackIndex, motion, ejected } = playerState;
+  const library = connected ? spotifyTapes : demoTapes;
+  const visibleLibraryStatus =
+    libraryStatus === 'loading' && spotifyTapes.length > 0
+      ? 'ready'
+      : libraryStatus;
+  const tape = library[tapeIndex] ?? demoTapes[0];
+  const track = tape.tracks[trackIndex] ?? tape.tracks[0];
+  const playableTape =
+    connected && tape.source === 'spotify' && library[tapeIndex] === tape;
+  const currentTrackMatches =
+    playableTape && spotifyPlayer.currentTrack?.uri === track.spotifyUri;
+  const isPlaying = currentTrackMatches && spotifyPlayer.isPlaying && !ejected;
+  const currentTime = currentTrackMatches ? spotifyPlayer.position : 0;
+  const duration =
+    currentTrackMatches && spotifyPlayer.duration > 0
+      ? spotifyPlayer.duration
+      : track.duration;
+  const progress = getProgress(currentTime, duration);
+  const remaining = `-${formatTime(duration - currentTime)}`;
 
   useEffect(() => {
-    if (!isPlaying || ejected || motion) return;
+    if (!spotifyConfigured) return;
+    let cancelled = false;
 
-    const interval = window.setInterval(() => {
-      dispatch({
-        type: 'tick',
-        duration: track.duration,
-        trackCount: tape.tracks.length,
+    void initializeSpotifySession()
+      .then((token) => {
+        if (cancelled) return;
+        setAccessToken(token);
+        setSessionStatus(token ? 'connected' : 'disconnected');
+        setLibraryStatus((current) =>
+          token ? (current === 'idle' ? 'loading' : current) : 'idle',
+        );
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setSpotifyError(
+          error instanceof Error ? error.message : 'Spotify rechazó la sesión.',
+        );
+        setSessionStatus('error');
       });
-    }, 1000);
 
-    return () => window.clearInterval(interval);
-  }, [ejected, isPlaying, motion, tape.tracks.length, track.duration]);
+    return () => {
+      cancelled = true;
+    };
+  }, [spotifyConfigured]);
+
+  useEffect(() => {
+    if (!connected) return;
+    const controller = new AbortController();
+
+    void Promise.all([
+      getSpotifySavedAlbums(controller.signal),
+      getSpotifyProfile(controller.signal),
+    ])
+      .then(([albums, profile]) => {
+        setSpotifyTapes(albums);
+        setProfileName(profile.display_name ?? profile.id);
+        setLibraryStatus('ready');
+        dispatch({ type: 'select-tape', tapeIndex: 0 });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setLibraryStatus('error');
+        setSpotifyError(
+          error instanceof Error
+            ? error.message
+            : 'No se pudo cargar tu biblioteca.',
+        );
+      });
+
+    return () => controller.abort();
+  }, [connected]);
 
   useEffect(() => {
     return () => {
-      if (motionTimer.current) window.clearTimeout(motionTimer.current);
+      clearMotionTimer();
+      cancelPlaybackOperation();
     };
   }, []);
 
-  const remaining = useMemo(
-    () => `-${formatTime(track.duration - currentTime)}`,
-    [currentTime, track.duration],
-  );
+  function handleSpotifyTrackChange(
+    currentTrack: SpotifyPlaybackTrack,
+    playing: boolean,
+  ) {
+    if (ignoredTrackUri.current === currentTrack.uri) {
+      ignoredTrackUri.current = null;
+      if (playing) void spotifyPlayer.pause();
+      return;
+    }
+    if (requestedTrackUri.current === currentTrack.uri) {
+      requestedTrackUri.current = null;
+    }
+    if (!playing) return;
+    for (const [nextTapeIndex, item] of spotifyTapes.entries()) {
+      const nextTrackIndex = item.tracks.findIndex(
+        (candidate) => candidate.spotifyUri === currentTrack.uri,
+      );
+      if (nextTrackIndex >= 0) {
+        dispatch({
+          type: 'sync-track',
+          tapeIndex: nextTapeIndex,
+          trackIndex: nextTrackIndex,
+        });
+        return;
+      }
+    }
+  }
+
+  function clearMotionTimer() {
+    if (!motionTimer.current) return;
+    window.clearTimeout(motionTimer.current);
+    motionTimer.current = null;
+  }
+
+  function cancelPlaybackOperation() {
+    playbackController.current?.abort();
+    playbackController.current = null;
+    if (requestedTrackUri.current) {
+      ignoredTrackUri.current = requestedTrackUri.current;
+      requestedTrackUri.current = null;
+    }
+  }
+
+  function beginPlaybackOperation() {
+    cancelPlaybackOperation();
+    ignoredTrackUri.current = null;
+    const controller = new AbortController();
+    playbackController.current = controller;
+    return controller;
+  }
+
+  function isCurrentPlaybackOperation(controller: AbortController) {
+    return (
+      playbackController.current === controller && !controller.signal.aborted
+    );
+  }
+
+  function finishPlaybackOperation(controller: AbortController) {
+    if (playbackController.current === controller) {
+      playbackController.current = null;
+    }
+  }
+
+  function showSpotifyConnection(message?: string) {
+    if (message) setSpotifyError(message);
+    setModalOpen(true);
+  }
+
+  async function connect() {
+    setSpotifyError(null);
+    setSessionStatus('checking');
+    try {
+      await beginSpotifyLogin();
+    } catch (error) {
+      setSessionStatus(spotifyConfigured ? 'error' : 'unconfigured');
+      setSpotifyError(
+        error instanceof Error ? error.message : 'No se pudo abrir Spotify.',
+      );
+    }
+  }
+
+  function disconnect() {
+    clearMotionTimer();
+    cancelPlaybackOperation();
+    void spotifyPlayer.pause();
+    disconnectSpotify();
+    setAccessToken(null);
+    setSpotifyTapes([]);
+    setProfileName(null);
+    setSpotifyError(null);
+    setLibraryStatus('idle');
+    setSessionStatus(spotifyConfigured ? 'disconnected' : 'unconfigured');
+    dispatch({ type: 'select-tape', tapeIndex: 0 });
+  }
+
+  async function startTrack(
+    nextTape: Tape,
+    nextTrackIndex: number,
+    controller: AbortController,
+  ) {
+    const nextTrack = nextTape.tracks[nextTrackIndex];
+    if (
+      spotifyPlayer.status !== 'ready' ||
+      !spotifyPlayer.deviceId ||
+      !nextTape.spotifyUri ||
+      !nextTrack?.spotifyUri
+    ) {
+      if (isCurrentPlaybackOperation(controller)) {
+        showSpotifyConnection(
+          'El reproductor de Spotify todavía no está listo.',
+        );
+        finishPlaybackOperation(controller);
+      }
+      return;
+    }
+
+    try {
+      setSpotifyError(null);
+      requestedTrackUri.current = nextTrack.spotifyUri;
+      await playSpotifyTrack(
+        spotifyPlayer.deviceId,
+        nextTape.spotifyUri,
+        nextTrack.spotifyUri,
+        controller.signal,
+      );
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      requestedTrackUri.current = null;
+      showSpotifyConnection(
+        error instanceof Error ? error.message : 'No se pudo iniciar la pista.',
+      );
+    } finally {
+      finishPlaybackOperation(controller);
+    }
+  }
+
+  async function togglePlayback() {
+    if (ejected) return;
+    if (!playableTape) {
+      showSpotifyConnection();
+      return;
+    }
+    if (spotifyPlayer.status !== 'ready') {
+      showSpotifyConnection('El reproductor de Spotify todavía no está listo.');
+      return;
+    }
+
+    const controller = beginPlaybackOperation();
+    try {
+      setSpotifyError(null);
+      await spotifyPlayer.activate();
+      if (!isCurrentPlaybackOperation(controller)) return;
+      if (!currentTrackMatches) {
+        await startTrack(tape, trackIndex, controller);
+      } else if (spotifyPlayer.isPlaying) {
+        await spotifyPlayer.pause();
+      } else {
+        await spotifyPlayer.resume();
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      showSpotifyConnection(
+        error instanceof Error ? error.message : 'Spotify no pudo reproducir.',
+      );
+    } finally {
+      finishPlaybackOperation(controller);
+    }
+  }
 
   function cue(direction: 1 | -1) {
     if (ejected || motion) return;
+    if (!playableTape || spotifyPlayer.status !== 'ready') {
+      showSpotifyConnection();
+      return;
+    }
+
+    const controller = beginPlaybackOperation();
+    void spotifyPlayer.activate().catch((error: unknown) => {
+      if (!isCurrentPlaybackOperation(controller)) return;
+      clearMotionTimer();
+      dispatch({ type: 'cue-cancel' });
+      cancelPlaybackOperation();
+      showSpotifyConnection(
+        error instanceof Error ? error.message : 'Spotify no pudo reproducir.',
+      );
+    });
+    const nextTrackIndex = getNextIndex(
+      trackIndex,
+      tape.tracks.length,
+      direction,
+    );
     dispatch({ type: 'cue-start', direction });
     motionTimer.current = window.setTimeout(() => {
+      if (!isCurrentPlaybackOperation(controller)) return;
       dispatch({
         type: 'cue-complete',
         direction,
         trackCount: tape.tracks.length,
       });
+      motionTimer.current = null;
+      void startTrack(tape, nextTrackIndex, controller);
     }, 720);
   }
 
   function selectTape(index: number) {
+    clearMotionTimer();
+    cancelPlaybackOperation();
+    if (connected) void spotifyPlayer.pause();
     dispatch({ type: 'select-tape', tapeIndex: index });
     setFavorite(false);
   }
 
   function toggleEject() {
+    clearMotionTimer();
+    cancelPlaybackOperation();
+    if (!ejected && connected) void spotifyPlayer.pause();
     dispatch({ type: 'toggle-eject' });
   }
+
+  function seek(time: number) {
+    if (!currentTrackMatches || ejected) return;
+    void spotifyPlayer.seek(time);
+  }
+
+  function changeVolume(nextVolume: number) {
+    setVolume(nextVolume);
+    if (connected) void spotifyPlayer.setVolume(nextVolume / 100);
+  }
+
+  async function toggleShuffle() {
+    if (!spotifyPlayer.deviceId || spotifyPlayer.status !== 'ready') {
+      showSpotifyConnection();
+      return;
+    }
+    const nextShuffle = !spotifyPlayer.shuffle;
+    try {
+      await setSpotifyShuffle(spotifyPlayer.deviceId, nextShuffle);
+    } catch (error) {
+      showSpotifyConnection(
+        error instanceof Error
+          ? error.message
+          : 'No se pudo cambiar la mezcla.',
+      );
+    }
+  }
+
+  const providerError =
+    spotifyError ??
+    spotifyPlayer.error ??
+    (spotifyPlayer.autoplayBlocked
+      ? 'El navegador bloqueó el inicio automático. Pulsa PLAY de nuevo.'
+      : null);
 
   return (
     <main className="app-shell">
@@ -373,7 +718,13 @@ function App() {
             onClick={() => setModalOpen(true)}
           >
             <Link2 size={15} />{' '}
-            {connected ? 'SPOTIFY ACTIVO' : 'CONECTAR FUENTE'}
+            {connected
+              ? spotifyPlayer.status === 'ready'
+                ? 'SPOTIFY ACTIVO'
+                : 'PREPARANDO SPOTIFY'
+              : sessionStatus === 'checking'
+                ? 'COMPROBANDO FUENTE'
+                : 'CONECTAR FUENTE'}
           </button>
           <button className="icon-button" aria-label="Ayuda" type="button">
             <CircleHelp size={17} />
@@ -401,12 +752,24 @@ function App() {
             <small>
               {ejected
                 ? 'DECK OPEN'
-                : isPlaying
-                  ? 'TAPE RUNNING'
-                  : 'TAPE READY'}
+                : connected && visibleLibraryStatus === 'loading'
+                  ? 'SYNCING LIBRARY'
+                  : connected && visibleLibraryStatus === 'error'
+                    ? 'SOURCE ERROR'
+                    : isPlaying
+                      ? 'TAPE RUNNING'
+                      : connected
+                        ? 'TAPE READY'
+                        : 'DEMO READY'}
             </small>
             <strong>
-              {ejected ? 'Elige un casete' : `${tape.side} / ${trackIndex + 1}`}
+              {ejected
+                ? 'Elige un casete'
+                : connected && visibleLibraryStatus === 'loading'
+                  ? 'Cargando álbumes'
+                  : connected && library.length === 0
+                    ? 'Sin álbumes guardados'
+                    : `${tape.side} / ${trackIndex + 1}`}
             </strong>
           </div>
           <span className="status-card__number">
@@ -499,7 +862,7 @@ function App() {
                   min="0"
                   max="100"
                   value={volume}
-                  onChange={(event) => setVolume(Number(event.target.value))}
+                  onChange={(event) => changeVolume(Number(event.target.value))}
                   style={{ '--range-progress': `${volume}%` } as CSSProperties}
                 />
               </label>
@@ -511,20 +874,18 @@ function App() {
               <span>
                 {String(trackIndex + 1).padStart(2, '0')} — {track.title}
               </span>
-              <span>{formatTime(track.duration)}</span>
+              <span>{formatTime(duration)}</span>
             </div>
             <input
               className="progress-input"
               type="range"
               min="0"
-              max={track.duration}
+              max={duration}
               value={currentTime}
-              onChange={(event) =>
-                dispatch({ type: 'seek', time: Number(event.target.value) })
-              }
+              onChange={(event) => seek(Number(event.target.value))}
               style={{ '--range-progress': `${progress}%` } as CSSProperties}
               aria-label="Posición de reproducción"
-              disabled={ejected}
+              disabled={ejected || !currentTrackMatches}
             />
           </div>
 
@@ -552,7 +913,7 @@ function App() {
             <TransportButton
               label={isPlaying ? 'Pausar' : 'Reproducir'}
               active={isPlaying}
-              onClick={() => dispatch({ type: 'toggle-play' })}
+              onClick={() => void togglePlayback()}
             >
               {isPlaying ? (
                 <Pause size={23} fill="currentColor" />
@@ -587,7 +948,7 @@ function App() {
             <button
               type="button"
               className={shuffle ? 'is-active' : ''}
-              onClick={() => setShuffle((value) => !value)}
+              onClick={() => void toggleShuffle()}
               aria-label="Mezclar"
               aria-pressed={shuffle}
             >
@@ -617,37 +978,57 @@ function App() {
           </div>
           <div className="shelf-controls" aria-hidden="true">
             <ChevronLeft size={18} />
-            <span>04 CASSETTES</span>
+            <span>{String(library.length).padStart(2, '0')} CASSETTES</span>
             <ChevronRight size={18} />
           </div>
         </div>
 
         <div className="tape-grid">
-          {tapes.map((item, index) => (
-            <button
-              className={`tape-card ${index === tapeIndex && !ejected ? 'is-selected' : ''}`}
-              key={item.id}
-              onClick={() => selectTape(index)}
-              type="button"
-              aria-label={`Cargar ${item.title} de ${item.artist}`}
-            >
-              <div className="tape-card__case">
-                <AlbumArt tape={item} />
-                <div className="tape-card__spine">
-                  <span>{item.artist}</span>
-                  <b>{item.title}</b>
-                  <small>{item.year}</small>
+          {connected && visibleLibraryStatus === 'loading' ? (
+            <div className="tape-grid__state" role="status">
+              <Radio size={22} />
+              <strong>Sincronizando tu estantería</strong>
+              <span>Buscando los álbumes guardados en Spotify.</span>
+            </div>
+          ) : connected && visibleLibraryStatus === 'error' ? (
+            <div className="tape-grid__state is-error" role="alert">
+              <Radio size={22} />
+              <strong>No pudimos cargar tus álbumes</strong>
+              <span>Abre la conexión para revisar el error.</span>
+            </div>
+          ) : connected && library.length === 0 ? (
+            <div className="tape-grid__state" role="status">
+              <Radio size={22} />
+              <strong>Tu estantería está vacía</strong>
+              <span>Guarda un álbum en Spotify y vuelve a conectar.</span>
+            </div>
+          ) : (
+            library.map((item, index) => (
+              <button
+                className={`tape-card ${index === tapeIndex && !ejected ? 'is-selected' : ''}`}
+                key={item.id}
+                onClick={() => selectTape(index)}
+                type="button"
+                aria-label={`Cargar ${item.title} de ${item.artist}`}
+              >
+                <div className="tape-card__case">
+                  <AlbumArt tape={item} />
+                  <div className="tape-card__spine">
+                    <span>{item.artist}</span>
+                    <b>{item.title}</b>
+                    <small>{item.year}</small>
+                  </div>
                 </div>
-              </div>
-              <div className="tape-card__caption">
-                <span>{String(index + 1).padStart(2, '0')}</span>
-                <div>
-                  <strong>{item.title}</strong>
-                  <small>{item.artist}</small>
+                <div className="tape-card__caption">
+                  <span>{String(index + 1).padStart(2, '0')}</span>
+                  <div>
+                    <strong>{item.title}</strong>
+                    <small>{item.artist}</small>
+                  </div>
                 </div>
-              </div>
-            </button>
-          ))}
+              </button>
+            ))
+          )}
         </div>
       </section>
 
@@ -658,9 +1039,13 @@ function App() {
         <div>
           <span className="eyebrow">DIGITAL SOURCE / ANALOG SOUL</span>
           <h2>
-            {connected
-              ? 'Tu biblioteca está lista.'
-              : 'Tus playlists también caben aquí.'}
+            {connected && visibleLibraryStatus === 'loading'
+              ? 'Rebobinando tu biblioteca.'
+              : connected && spotifyPlayer.status === 'ready'
+                ? 'Tu biblioteca está lista.'
+                : connected
+                  ? 'Preparando el reproductor.'
+                  : 'Tus álbumes también caben aquí.'}
           </h2>
         </div>
         <button type="button" onClick={() => setModalOpen(true)}>
@@ -677,9 +1062,14 @@ function App() {
 
       {modalOpen && (
         <ProviderModal
-          connected={connected}
-          onConnect={() => setConnected((value) => !value)}
+          error={providerError}
+          libraryStatus={visibleLibraryStatus}
+          onConnect={() => void connect()}
           onClose={() => setModalOpen(false)}
+          onDisconnect={disconnect}
+          playerStatus={spotifyPlayer.status}
+          profileName={profileName}
+          sessionStatus={sessionStatus}
         />
       )}
     </main>

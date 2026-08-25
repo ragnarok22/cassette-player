@@ -3,6 +3,7 @@ export type Track = {
   title: string;
   artist: string;
   duration: number;
+  spotifyUri?: string;
 };
 
 export type Tape = {
@@ -15,5 +16,8 @@ export type Tape = {
   accent: string;
   ink: string;
   coverClass: string;
+  artworkUrl?: string;
+  source: 'demo' | 'spotify';
+  spotifyUri?: string;
   tracks: Track[];
 };

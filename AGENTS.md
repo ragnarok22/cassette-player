@@ -4,14 +4,15 @@
 
 - This is a single-package React + TypeScript Vite app. Use `pnpm`; `package.json` pins pnpm 11.24.0 and `pnpm-lock.yaml` is authoritative.
 - Run locally with `pnpm dev`. `pnpm build` runs `tsc -b` before Vite and writes the ignored `dist/` directory; never edit `dist/` directly.
-- No environment variables, backend, database, or external service is required.
+- Spotify playback uses `.env.local` values from `.env.example`; never add a client secret. Local OAuth must run at `http://127.0.0.1:5173/`, not `localhost`, because Spotify validates the exact redirect URI.
 
 ## Architecture
 
 - `src/main.tsx` mounts the app; `src/app.tsx` contains the UI and in-memory player state.
-- `src/data/library.ts` is the static cassette/track catalog. Pure counter, navigation, and progress logic lives in `src/lib/player.ts`.
+- `src/data/library.ts` is the disconnected preview catalog. `src/lib/spotify-auth.ts`, `src/lib/spotify-api.ts`, and `src/lib/use-spotify-player.ts` own PKCE, saved-album mapping, and Web Playback SDK state respectively.
+- Pure counter, navigation, and progress logic lives in `src/lib/player.ts`.
 - `src/styles.css` owns the layout, responsive rules, and cassette animations; its class names are coupled directly to `src/app.tsx`.
-- The player is deliberately a visual interaction demo: it has no audio element, persistence, network calls, or real Spotify OAuth. The provider modal only toggles local state.
+- Real audio comes only from Spotify's Web Playback SDK and requires Premium. OAuth uses browser-side PKCE; sessions persist in local storage and disconnect removes them.
 
 ## Conventions
 
