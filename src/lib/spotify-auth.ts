@@ -174,10 +174,11 @@ async function requestToken(body: URLSearchParams) {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
   });
+  const responseOk = response.ok;
   const payload = (await response.json().catch(() => null)) as
     SpotifyTokenResponse | SpotifyTokenError | null;
 
-  if (!response.ok) {
+  if (!responseOk) {
     const message =
       payload && 'error_description' in payload
         ? payload.error_description

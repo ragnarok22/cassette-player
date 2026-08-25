@@ -140,18 +140,21 @@ describe('Spotify authentication', () => {
         scope: 'streaming',
       }),
     );
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(
-        Response.json(
-          {
-            error: 'invalid_grant',
-            error_description: 'Refresh token revoked',
-          },
-          { status: 400 },
-        ),
-      ),
-    );
+    let statusChecked = false;
+    const response = {
+      get ok() {
+        statusChecked = true;
+        return false;
+      },
+      json: vi.fn(async () => {
+        if (!statusChecked) throw new Error('Body read before status check');
+        return {
+          error: 'invalid_grant',
+          error_description: 'Refresh token revoked',
+        };
+      }),
+    } as unknown as Response;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
     const { refreshSpotifyAccessToken } = await import('./spotify-auth');
 
     await expect(refreshSpotifyAccessToken()).rejects.toThrow(
