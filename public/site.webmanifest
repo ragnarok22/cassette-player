@@ -1,0 +1,25 @@
+{
+  "name": "Cassette Player",
+  "short_name": "Cassette",
+  "description": "Tu biblioteca de Spotify convertida en una colección de casetes digital.",
+  "lang": "es",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ede4d0",
+  "theme_color": "#ede4d0",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

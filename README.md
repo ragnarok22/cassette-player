@@ -37,11 +37,12 @@ cp .env.example .env.local
 ```dotenv
 VITE_SPOTIFY_CLIENT_ID=your_spotify_client_id
 VITE_SPOTIFY_REDIRECT_URI=http://127.0.0.1:5173/
+VITE_SITE_URL=http://127.0.0.1:5173/
 ```
 
 Do not add a Spotify client secret. PKCE is designed for browser applications where secrets cannot be stored safely.
 
-For a self-hosted deployment, replace the redirect value with the exact public HTTPS URL and register that same URL in Spotify's dashboard.
+For a self-hosted deployment, replace the redirect and site values with the exact public HTTPS URL, and register the redirect URL in Spotify's dashboard. `VITE_SITE_URL` is used to generate absolute canonical and social-sharing metadata.
 
 ## Run Locally
 

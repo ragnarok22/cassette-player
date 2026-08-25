@@ -3,19 +3,85 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#ede4d0" />
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23b43a25'/%3E%3Cpath d='M14 21h36v22H14z' fill='%23ede4d0'/%3E%3Ccircle cx='24' cy='32' r='6' fill='%2329231d'/%3E%3Ccircle cx='40' cy='32' r='6' fill='%2329231d'/%3E%3Cpath d='M24 32h16' stroke='%23b43a25' stroke-width='3'/%3E%3C/svg%3E"
-    />
+    <title>Cassette Player | Tu biblioteca de Spotify en casetes</title>
     <meta
       name="description"
-      content="cassette-player: una casetera digital para escuchar tu música como antes."
+      content="Convierte tus álbumes guardados de Spotify en una colección de casetes digital. Conecta tu cuenta Premium y escucha música en una casetera interactiva."
     />
-    <title>cassette-player</title>
+    <meta
+      name="robots"
+      content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1"
+    />
+    <meta name="application-name" content="Cassette Player" />
+    <meta name="theme-color" content="#ede4d0" />
+    <meta name="color-scheme" content="light" />
+
+    <link rel="canonical" href="__SITE_URL__" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="es_ES" />
+    <meta property="og:site_name" content="Cassette Player" />
+    <meta
+      property="og:title"
+      content="Cassette Player | Tu biblioteca de Spotify en casetes"
+    />
+    <meta
+      property="og:description"
+      content="Convierte tus álbumes guardados de Spotify en casetes y reprodúcelos en una casetera digital con alma analógica."
+    />
+    <meta property="og:url" content="__SITE_URL__" />
+    <meta property="og:image" content="__SOCIAL_IMAGE_URL__" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Cassette Player, tu biblioteca de Spotify con alma analógica"
+    />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="Cassette Player | Tu biblioteca de Spotify en casetes"
+    />
+    <meta
+      name="twitter:description"
+      content="Convierte tus álbumes guardados de Spotify en casetes y vuelve a disfrutar el ritual de escuchar música."
+    />
+    <meta name="twitter:image" content="__SOCIAL_IMAGE_URL__" />
+    <meta
+      name="twitter:image:alt"
+      content="Cassette Player, tu biblioteca de Spotify con alma analógica"
+    />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "Cassette Player",
+        "description": "Una casetera digital que convierte los álbumes guardados de Spotify en una colección de casetes interactiva.",
+        "applicationCategory": "MultimediaApplication",
+        "applicationSubCategory": "Reproductor de música",
+        "operatingSystem": "Cualquier sistema con un navegador web compatible",
+        "browserRequirements": "Requiere JavaScript y una cuenta Spotify Premium para reproducir audio",
+        "inLanguage": "es",
+        "isAccessibleForFree": true,
+        "featureList": [
+          "Reproducción de álbumes guardados de Spotify",
+          "Controles de casetera interactivos",
+          "Biblioteca musical visual en formato casete"
+        ]
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      Cassette Player necesita JavaScript para conectar Spotify y reproducir tu
+      biblioteca en una casetera digital interactiva.
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
