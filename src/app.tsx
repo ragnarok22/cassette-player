@@ -355,12 +355,12 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="brand" href="#top" aria-label="Rewind Room, inicio">
+        <a className="brand" href="#top" aria-label="Cassette Player, inicio">
           <span className="brand__mark">
             <Rewind size={18} strokeWidth={2.4} />
           </span>
           <span>
-            REWIND <b>ROOM</b>
+            CASSETTE <b>PLAYER</b>
           </span>
         </a>
         <div className="topbar__middle" aria-hidden="true">
@@ -670,7 +670,7 @@ function App() {
       </section>
 
       <footer>
-        <span>© 2026 REWIND ROOM AUDIO CLUB</span>
+        <span>© 2026 CASSETTE PLAYER AUDIO CLUB</span>
         <span>MADE WITH TAPE HISS &amp; PATIENCE</span>
         <span>PARAMARIBO · 05°N</span>
       </footer>
