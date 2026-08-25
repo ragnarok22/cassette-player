@@ -174,11 +174,11 @@ async function requestToken(body: URLSearchParams) {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
   });
-  const responseOk = response.ok;
-  const payload = (await response.json().catch(() => null)) as
-    SpotifyTokenResponse | SpotifyTokenError | null;
 
-  if (!responseOk) {
+  if (!response.ok) {
+    const payload = (await response
+      .json()
+      .catch(() => null)) as SpotifyTokenError | null;
     const message =
       payload && 'error_description' in payload
         ? payload.error_description
@@ -189,6 +189,9 @@ async function requestToken(body: URLSearchParams) {
     );
   }
 
+  const payload = (await response
+    .json()
+    .catch(() => null)) as SpotifyTokenResponse | null;
   if (!payload || !('access_token' in payload)) {
     throw new SpotifyAuthError('Spotify devolvió una sesión no válida.');
   }

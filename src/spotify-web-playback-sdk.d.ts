@@ -65,7 +65,23 @@ declare global {
       disconnect(): void;
       getCurrentState(): Promise<WebPlaybackState | null>;
       pause(): Promise<void>;
-      removeListener(event: string): boolean;
+      removeListener(
+        event: 'ready' | 'not_ready',
+        callback: (value: { device_id: string }) => void,
+      ): boolean;
+      removeListener(
+        event: 'player_state_changed',
+        callback: (state: WebPlaybackState | null) => void,
+      ): boolean;
+      removeListener(event: 'autoplay_failed', callback: () => void): boolean;
+      removeListener(
+        event:
+          | 'initialization_error'
+          | 'authentication_error'
+          | 'account_error'
+          | 'playback_error',
+        callback: (error: WebPlaybackError) => void,
+      ): boolean;
       resume(): Promise<void>;
       seek(positionMs: number): Promise<void>;
       setVolume(volume: number): Promise<void>;

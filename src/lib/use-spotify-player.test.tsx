@@ -27,9 +27,10 @@ class MockSpotifyPlayer {
     return true;
   }
 
-  removeListener(event: string) {
+  removeListener = vi.fn((event: string, listener?: Listener) => {
+    if (listener && this.listeners.get(event) !== listener) return false;
     return this.listeners.delete(event);
-  }
+  });
 
   emit(event: string, value: unknown) {
     this.listeners.get(event)?.(value);
@@ -102,7 +103,11 @@ describe('Spotify Web Playback SDK adapter', () => {
       true,
     );
 
+    const registeredListeners = [...player.listeners];
     unmount();
+    for (const [event, listener] of registeredListeners) {
+      expect(player.removeListener).toHaveBeenCalledWith(event, listener);
+    }
     expect(player.disconnect).toHaveBeenCalledOnce();
   });
 
