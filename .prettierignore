@@ -4,4 +4,5 @@ node_modules
 public/*.png
 public/*.svg
 public/robots.txt
+public/sitemap.xml
 public/site.webmanifest

@@ -428,6 +428,650 @@ function ProviderModal({
   );
 }
 
+type SpotifyPlaybackTransactionsOptions = {
+  connected: boolean;
+  dispatch: (action: PlayerAction) => void;
+  onConnectionError: (message?: string) => void;
+  spotifyDispatch: (action: SpotifyAction) => void;
+  spotifyTapes: Tape[];
+};
+
+function useSpotifyPlaybackTransactions({
+  connected,
+  dispatch,
+  onConnectionError,
+  spotifyDispatch,
+  spotifyTapes,
+}: SpotifyPlaybackTransactionsOptions) {
+  const playbackController = useRef<AbortController | null>(null);
+  const requestedTrackUri = useRef<string | null>(null);
+  const ignoredTrackUri = useRef<string | null>(null);
+  const spotifyPlayer = useSpotifyPlayer(connected, handleSpotifyTrackChange);
+
+  useEffect(() => {
+    return () => {
+      playbackController.current?.abort();
+      playbackController.current = null;
+      if (requestedTrackUri.current) {
+        ignoredTrackUri.current = requestedTrackUri.current;
+        requestedTrackUri.current = null;
+      }
+    };
+  }, []);
+
+  function handleSpotifyTrackChange(
+    currentTrack: SpotifyPlaybackTrack,
+    playing: boolean,
+  ) {
+    if (ignoredTrackUri.current === currentTrack.uri) {
+      ignoredTrackUri.current = null;
+      if (playing) void spotifyPlayer.pause();
+      return;
+    }
+    if (requestedTrackUri.current === currentTrack.uri) {
+      requestedTrackUri.current = null;
+    }
+    if (!playing) return;
+    for (const [tapeIndex, tape] of spotifyTapes.entries()) {
+      const trackIndex = tape.tracks.findIndex(
+        (track) => track.spotifyUri === currentTrack.uri,
+      );
+      if (trackIndex >= 0) {
+        dispatch({ type: 'sync-track', tapeIndex, trackIndex });
+        return;
+      }
+    }
+  }
+
+  function cancelPlaybackOperation() {
+    playbackController.current?.abort();
+    playbackController.current = null;
+    if (requestedTrackUri.current) {
+      ignoredTrackUri.current = requestedTrackUri.current;
+      requestedTrackUri.current = null;
+    }
+  }
+
+  function beginPlaybackOperation() {
+    cancelPlaybackOperation();
+    ignoredTrackUri.current = null;
+    const controller = new AbortController();
+    playbackController.current = controller;
+    return controller;
+  }
+
+  function isCurrentPlaybackOperation(controller: AbortController) {
+    return (
+      playbackController.current === controller && !controller.signal.aborted
+    );
+  }
+
+  function finishPlaybackOperation(controller: AbortController) {
+    if (playbackController.current === controller) {
+      playbackController.current = null;
+    }
+  }
+
+  async function startTrack(
+    tape: Tape,
+    trackIndex: number,
+    controller: AbortController,
+  ) {
+    const track = tape.tracks[trackIndex];
+    if (
+      spotifyPlayer.status !== 'ready' ||
+      !spotifyPlayer.deviceId ||
+      !tape.spotifyUri ||
+      !track?.spotifyUri
+    ) {
+      if (isCurrentPlaybackOperation(controller)) {
+        onConnectionError('El reproductor de Spotify todavía no está listo.');
+        finishPlaybackOperation(controller);
+      }
+      return;
+    }
+
+    try {
+      spotifyDispatch({ type: 'error-changed', error: null });
+      requestedTrackUri.current = track.spotifyUri;
+      await playSpotifyTrack(
+        spotifyPlayer.deviceId,
+        tape.spotifyUri,
+        track.spotifyUri,
+        controller.signal,
+      );
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      requestedTrackUri.current = null;
+      onConnectionError(
+        error instanceof Error ? error.message : 'No se pudo iniciar la pista.',
+      );
+    } finally {
+      finishPlaybackOperation(controller);
+    }
+  }
+
+  async function toggleTrack(
+    tape: Tape,
+    trackIndex: number,
+    currentTrackMatches: boolean,
+  ) {
+    if (spotifyPlayer.status !== 'ready') {
+      onConnectionError('El reproductor de Spotify todavía no está listo.');
+      return;
+    }
+    const controller = beginPlaybackOperation();
+    try {
+      spotifyDispatch({ type: 'error-changed', error: null });
+      await spotifyPlayer.activate();
+      if (!isCurrentPlaybackOperation(controller)) return;
+      if (!currentTrackMatches) {
+        await startTrack(tape, trackIndex, controller);
+      } else if (spotifyPlayer.isPlaying) {
+        await spotifyPlayer.pause();
+      } else {
+        await spotifyPlayer.resume();
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      onConnectionError(
+        error instanceof Error ? error.message : 'Spotify no pudo reproducir.',
+      );
+    } finally {
+      finishPlaybackOperation(controller);
+    }
+  }
+
+  async function toggleShuffle() {
+    if (!spotifyPlayer.deviceId || spotifyPlayer.status !== 'ready') {
+      onConnectionError();
+      return;
+    }
+    const nextShuffle = !spotifyPlayer.shuffle;
+    try {
+      await setSpotifyShuffle(spotifyPlayer.deviceId, nextShuffle);
+    } catch (error) {
+      onConnectionError(
+        error instanceof Error
+          ? error.message
+          : 'No se pudo cambiar la mezcla.',
+      );
+    }
+  }
+
+  return {
+    beginPlaybackOperation,
+    cancelPlaybackOperation,
+    isCurrentPlaybackOperation,
+    spotifyPlayer,
+    startTrack,
+    toggleShuffle,
+    toggleTrack,
+  };
+}
+
+type PageHeaderProps = {
+  connected: boolean;
+  ejected: boolean;
+  isPlaying: boolean;
+  libraryCount: number;
+  libraryStatus: SpotifyLibraryStatus;
+  onOpenProvider: () => void;
+  playerStatus: string;
+  sessionStatus: SpotifySessionStatus;
+  tape: Tape;
+  tapeIndex: number;
+  trackIndex: number;
+};
+
+function PageHeader({
+  connected,
+  ejected,
+  isPlaying,
+  libraryCount,
+  libraryStatus,
+  onOpenProvider,
+  playerStatus,
+  sessionStatus,
+  tape,
+  tapeIndex,
+  trackIndex,
+}: PageHeaderProps) {
+  return (
+    <>
+      <header className="topbar">
+        <a className="brand" href="#top" aria-label="Cassette Player, inicio">
+          <span className="brand__mark">
+            <Rewind size={18} strokeWidth={2.4} />
+          </span>
+          <span>
+            CASSETTE <b>PLAYER</b>
+          </span>
+        </a>
+        <div className="topbar__middle" aria-hidden="true">
+          PLAYBACK DEPT. / UNIT 04
+        </div>
+        <nav className="topbar__actions" aria-label="Acciones principales">
+          <button
+            className="text-button"
+            type="button"
+            onClick={onOpenProvider}
+          >
+            <Link2 size={15} />{' '}
+            {connected
+              ? playerStatus === 'ready'
+                ? 'SPOTIFY ACTIVO'
+                : 'PREPARANDO SPOTIFY'
+              : sessionStatus === 'checking'
+                ? 'COMPROBANDO FUENTE'
+                : 'CONECTAR FUENTE'}
+          </button>
+          <button className="icon-button" aria-label="Ayuda" type="button">
+            <CircleHelp size={17} />
+          </button>
+        </nav>
+      </header>
+
+      <section className="hero" id="top">
+        <div className="hero__intro">
+          <span className="eyebrow">NOW IN THE DECK</span>
+          <h1>
+            La música se hizo
+            <br />
+            para <em>tocarla.</em>
+          </h1>
+          <p>
+            Una colección digital con alma analógica. Elige un casete, baja PLAY
+            y deja que giren los carretes.
+          </p>
+        </div>
+
+        <div className="status-card">
+          <span className={`status-led ${isPlaying ? 'is-on' : ''}`} />
+          <div>
+            <small>
+              {ejected
+                ? 'DECK OPEN'
+                : connected && libraryStatus === 'loading'
+                  ? 'SYNCING LIBRARY'
+                  : connected && libraryStatus === 'error'
+                    ? 'SOURCE ERROR'
+                    : isPlaying
+                      ? 'TAPE RUNNING'
+                      : connected
+                        ? 'TAPE READY'
+                        : 'DEMO READY'}
+            </small>
+            <strong>
+              {ejected
+                ? 'Elige un casete'
+                : connected && libraryStatus === 'loading'
+                  ? 'Cargando álbumes'
+                  : connected && libraryCount === 0
+                    ? 'Sin álbumes guardados'
+                    : `${tape.side} / ${trackIndex + 1}`}
+            </strong>
+          </div>
+          <span className="status-card__number">
+            {String(tapeIndex + 1).padStart(2, '0')}
+          </span>
+        </div>
+      </section>
+    </>
+  );
+}
+
+type PlayerAreaProps = {
+  currentTime: number;
+  currentTrackMatches: boolean;
+  dolby: boolean;
+  duration: number;
+  ejected: boolean;
+  favorite: boolean;
+  isPlaying: boolean;
+  motion: MotionDirection;
+  onChangeVolume: (volume: number) => void;
+  onCue: (direction: 1 | -1) => void;
+  onSeek: (time: number) => void;
+  onToggleDolby: () => void;
+  onToggleEject: () => void;
+  onToggleFavorite: () => void;
+  onTogglePlayback: () => Promise<void>;
+  onToggleShuffle: () => Promise<void>;
+  shuffle: boolean;
+  tape: Tape;
+  track: Tape['tracks'][number];
+  trackIndex: number;
+  volume: number;
+};
+
+function PlayerArea({
+  currentTime,
+  currentTrackMatches,
+  dolby,
+  duration,
+  ejected,
+  favorite,
+  isPlaying,
+  motion,
+  onChangeVolume,
+  onCue,
+  onSeek,
+  onToggleDolby,
+  onToggleEject,
+  onToggleFavorite,
+  onTogglePlayback,
+  onToggleShuffle,
+  shuffle,
+  tape,
+  track,
+  trackIndex,
+  volume,
+}: PlayerAreaProps) {
+  const progress = getProgress(currentTime, duration);
+  const remaining = `-${formatTime(duration - currentTime)}`;
+
+  return (
+    <section className="player-area" aria-label="Reproductor de casete">
+      <div className="deck-shadow" />
+      <div className="deck">
+        <Screw className="deck__screw deck__screw--tl" />
+        <Screw className="deck__screw deck__screw--tr" />
+        <Screw className="deck__screw deck__screw--bl" />
+        <Screw className="deck__screw deck__screw--br" />
+
+        <div className="deck__topline">
+          <div>
+            <b>RR–420</b>
+            <span>STEREO CASSETTE DECK</span>
+          </div>
+          <div className="deck__topline-right">
+            <span>AUTO REVERSE</span>
+            <i>∞</i>
+          </div>
+        </div>
+
+        <div className="deck__face">
+          <div className="deck__left-controls">
+            <button
+              type="button"
+              className={`square-control ${dolby ? 'is-pressed' : ''}`}
+              onClick={onToggleDolby}
+              aria-pressed={dolby}
+            >
+              <Settings2 size={16} />
+              <span>DOLBY NR</span>
+            </button>
+            <div className="level-meter" aria-label="Nivel de señal">
+              <span>L</span>
+              <div className="level-meter__track">
+                {Array.from({ length: 10 }, (_, index) => (
+                  <i
+                    key={index}
+                    className={isPlaying && index < 7 ? 'is-lit' : ''}
+                  />
+                ))}
+              </div>
+              <span>R</span>
+              <div className="level-meter__track">
+                {Array.from({ length: 10 }, (_, index) => (
+                  <i
+                    key={index}
+                    className={isPlaying && index < 5 ? 'is-lit' : ''}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className={`tape-bay ${ejected ? 'is-open' : ''}`}>
+            <div className="tape-bay__inside">
+              <span>INSERT TAPE</span>
+              <div className="bay-spindles">
+                <i />
+                <i />
+              </div>
+            </div>
+            <Cassette
+              tape={tape}
+              playing={isPlaying}
+              motion={motion}
+              ejected={ejected}
+            />
+            <div className="tape-bay__glass" />
+          </div>
+
+          <div className="deck__right-controls">
+            <span className="counter-label">TAPE COUNTER</span>
+            <div className="counter-display">
+              <span>{formatTime(currentTime)}</span>
+              <small>{remaining}</small>
+            </div>
+            <label className="volume-control">
+              <span>
+                <Volume2 size={14} /> OUTPUT
+              </span>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={volume}
+                onChange={(event) => onChangeVolume(Number(event.target.value))}
+                style={{ '--range-progress': `${volume}%` } as CSSProperties}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="progress-wrap">
+          <div className="progress-meta">
+            <span>
+              {String(trackIndex + 1).padStart(2, '0')} — {track.title}
+            </span>
+            <span>{formatTime(duration)}</span>
+          </div>
+          <input
+            className="progress-input"
+            type="range"
+            min="0"
+            max={duration}
+            value={currentTime}
+            onChange={(event) => onSeek(Number(event.target.value))}
+            style={{ '--range-progress': `${progress}%` } as CSSProperties}
+            aria-label="Posición de reproducción"
+            disabled={ejected || !currentTrackMatches}
+          />
+        </div>
+
+        <div className="transport-row">
+          <div className="transport-labels" aria-hidden="true">
+            <span>POWER</span>
+            <span>REW</span>
+            <span>PLAY</span>
+            <span>F.FWD</span>
+            <span>EJECT</span>
+          </div>
+          <button className="power-button" aria-label="Encendido" type="button">
+            <span />
+          </button>
+          <TransportButton
+            label="Pista anterior, rebobinar"
+            onClick={() => onCue(-1)}
+          >
+            <Rewind size={22} fill="currentColor" />
+          </TransportButton>
+          <TransportButton
+            label={isPlaying ? 'Pausar' : 'Reproducir'}
+            active={isPlaying}
+            onClick={() => void onTogglePlayback()}
+          >
+            {isPlaying ? (
+              <Pause size={23} fill="currentColor" />
+            ) : (
+              <Play size={23} fill="currentColor" />
+            )}
+          </TransportButton>
+          <TransportButton
+            label="Pista siguiente, avance rápido"
+            onClick={() => onCue(1)}
+          >
+            <FastForward size={22} fill="currentColor" />
+          </TransportButton>
+          <TransportButton
+            label={ejected ? 'Cerrar casetera' : 'Expulsar casete'}
+            onClick={onToggleEject}
+          >
+            <PanelTopOpen size={22} />
+          </TransportButton>
+        </div>
+      </div>
+
+      <div className="now-playing">
+        <div className="now-playing__track">
+          <span className="eyebrow">PLAYING NOW</span>
+          <h2>{track.title}</h2>
+          <p>
+            {track.artist} · {tape.title}
+          </p>
+        </div>
+        <div className="now-playing__actions">
+          <button
+            type="button"
+            className={shuffle ? 'is-active' : ''}
+            onClick={() => void onToggleShuffle()}
+            aria-label="Mezclar"
+            aria-pressed={shuffle}
+          >
+            <Shuffle size={18} />
+          </button>
+          <button
+            type="button"
+            className={favorite ? 'is-active' : ''}
+            onClick={onToggleFavorite}
+            aria-label="Favorito"
+            aria-pressed={favorite}
+          >
+            <Heart size={19} fill={favorite ? 'currentColor' : 'none'} />
+          </button>
+          <button type="button" aria-label="Cola de reproducción">
+            <ListMusic size={19} />
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+type TapeLibraryProps = {
+  connected: boolean;
+  ejected: boolean;
+  library: Tape[];
+  libraryStatus: SpotifyLibraryStatus;
+  onOpenProvider: () => void;
+  onSelectTape: (index: number) => void;
+  playerStatus: string;
+  tapeIndex: number;
+};
+
+function TapeLibrary({
+  connected,
+  ejected,
+  library,
+  libraryStatus,
+  onOpenProvider,
+  onSelectTape,
+  playerStatus,
+  tapeIndex,
+}: TapeLibraryProps) {
+  return (
+    <>
+      <section className="shelf-section" aria-labelledby="shelf-title">
+        <div className="section-heading">
+          <div>
+            <span className="eyebrow">YOUR TAPE SHELF</span>
+            <h2 id="shelf-title">Elige qué poner</h2>
+          </div>
+          <div className="shelf-controls" aria-hidden="true">
+            <ChevronLeft size={18} />
+            <span>{String(library.length).padStart(2, '0')} CASSETTES</span>
+            <ChevronRight size={18} />
+          </div>
+        </div>
+
+        <div className="tape-grid">
+          {connected && libraryStatus === 'loading' ? (
+            <div className="tape-grid__state" role="status">
+              <Radio size={22} />
+              <strong>Sincronizando tu estantería</strong>
+              <span>Buscando los álbumes guardados en Spotify.</span>
+            </div>
+          ) : connected && libraryStatus === 'error' ? (
+            <div className="tape-grid__state is-error" role="alert">
+              <Radio size={22} />
+              <strong>No pudimos cargar tus álbumes</strong>
+              <span>Abre la conexión para revisar el error.</span>
+            </div>
+          ) : connected && library.length === 0 ? (
+            <div className="tape-grid__state" role="status">
+              <Radio size={22} />
+              <strong>Tu estantería está vacía</strong>
+              <span>Guarda un álbum en Spotify y vuelve a conectar.</span>
+            </div>
+          ) : (
+            library.map((tape, index) => (
+              <button
+                className={`tape-card ${index === tapeIndex && !ejected ? 'is-selected' : ''}`}
+                key={tape.id}
+                onClick={() => onSelectTape(index)}
+                type="button"
+                aria-label={`Cargar ${tape.title} de ${tape.artist}`}
+              >
+                <div className="tape-card__case">
+                  <AlbumArt tape={tape} />
+                  <div className="tape-card__spine">
+                    <span>{tape.artist}</span>
+                    <b>{tape.title}</b>
+                    <small>{tape.year}</small>
+                  </div>
+                </div>
+                <div className="tape-card__caption">
+                  <span>{String(index + 1).padStart(2, '0')}</span>
+                  <div>
+                    <strong>{tape.title}</strong>
+                    <small>{tape.artist}</small>
+                  </div>
+                </div>
+              </button>
+            ))
+          )}
+        </div>
+      </section>
+
+      <section className="provider-strip">
+        <div className="provider-strip__icon">
+          <Bluetooth size={23} />
+        </div>
+        <div>
+          <span className="eyebrow">DIGITAL SOURCE / ANALOG SOUL</span>
+          <h2>
+            {connected && libraryStatus === 'loading'
+              ? 'Rebobinando tu biblioteca.'
+              : connected && playerStatus === 'ready'
+                ? 'Tu biblioteca está lista.'
+                : connected
+                  ? 'Preparando el reproductor.'
+                  : 'Tus álbumes también caben aquí.'}
+          </h2>
+        </div>
+        <button type="button" onClick={onOpenProvider}>
+          {connected ? 'GESTIONAR CONEXIÓN' : 'CONECTAR SPOTIFY'}{' '}
+          <ChevronRight size={17} />
+        </button>
+      </section>
+    </>
+  );
+}
+
 function App() {
   const [playerState, dispatch] = useReducer(playerReducer, initialPlayerState);
   const spotifyConfigured = getSpotifyConfig() !== null;
@@ -449,13 +1093,15 @@ function App() {
   const [dolby, setDolby] = useState(true);
   const [volume, setVolume] = useState(72);
   const motionTimer = useRef<number | null>(null);
-  const playbackController = useRef<AbortController | null>(null);
-  const requestedTrackUri = useRef<string | null>(null);
-  const ignoredTrackUri = useRef<string | null>(null);
   const connected = sessionStatus === 'connected' && accessToken !== null;
-  const spotifyPlayer = useSpotifyPlayer(connected, handleSpotifyTrackChange);
-  const shuffle = spotifyPlayer.shuffle;
-
+  const playback = useSpotifyPlaybackTransactions({
+    connected,
+    dispatch,
+    onConnectionError: showSpotifyConnection,
+    spotifyDispatch,
+    spotifyTapes,
+  });
+  const { spotifyPlayer } = playback;
   const { tapeIndex, trackIndex, motion, ejected } = playerState;
   const library = connected ? spotifyTapes : demoTapes;
   const visibleLibraryStatus =
@@ -474,8 +1120,6 @@ function App() {
     currentTrackMatches && spotifyPlayer.duration > 0
       ? spotifyPlayer.duration
       : track.duration;
-  const progress = getProgress(currentTime, duration);
-  const remaining = `-${formatTime(duration - currentTime)}`;
 
   useEffect(() => {
     if (!spotifyConfigured) return;
@@ -536,71 +1180,13 @@ function App() {
   useEffect(() => {
     return () => {
       clearMotionTimer();
-      cancelPlaybackOperation();
     };
   }, []);
-
-  function handleSpotifyTrackChange(
-    currentTrack: SpotifyPlaybackTrack,
-    playing: boolean,
-  ) {
-    if (ignoredTrackUri.current === currentTrack.uri) {
-      ignoredTrackUri.current = null;
-      if (playing) void spotifyPlayer.pause();
-      return;
-    }
-    if (requestedTrackUri.current === currentTrack.uri) {
-      requestedTrackUri.current = null;
-    }
-    if (!playing) return;
-    for (const [nextTapeIndex, item] of spotifyTapes.entries()) {
-      const nextTrackIndex = item.tracks.findIndex(
-        (candidate) => candidate.spotifyUri === currentTrack.uri,
-      );
-      if (nextTrackIndex >= 0) {
-        dispatch({
-          type: 'sync-track',
-          tapeIndex: nextTapeIndex,
-          trackIndex: nextTrackIndex,
-        });
-        return;
-      }
-    }
-  }
 
   function clearMotionTimer() {
     if (!motionTimer.current) return;
     window.clearTimeout(motionTimer.current);
     motionTimer.current = null;
-  }
-
-  function cancelPlaybackOperation() {
-    playbackController.current?.abort();
-    playbackController.current = null;
-    if (requestedTrackUri.current) {
-      ignoredTrackUri.current = requestedTrackUri.current;
-      requestedTrackUri.current = null;
-    }
-  }
-
-  function beginPlaybackOperation() {
-    cancelPlaybackOperation();
-    ignoredTrackUri.current = null;
-    const controller = new AbortController();
-    playbackController.current = controller;
-    return controller;
-  }
-
-  function isCurrentPlaybackOperation(controller: AbortController) {
-    return (
-      playbackController.current === controller && !controller.signal.aborted
-    );
-  }
-
-  function finishPlaybackOperation(controller: AbortController) {
-    if (playbackController.current === controller) {
-      playbackController.current = null;
-    }
   }
 
   function showSpotifyConnection(message?: string) {
@@ -624,7 +1210,7 @@ function App() {
 
   function disconnect() {
     clearMotionTimer();
-    cancelPlaybackOperation();
+    playback.cancelPlaybackOperation();
     void spotifyPlayer.pause();
     disconnectSpotify();
     spotifyDispatch({
@@ -634,78 +1220,13 @@ function App() {
     dispatch({ type: 'select-tape', tapeIndex: 0 });
   }
 
-  async function startTrack(
-    nextTape: Tape,
-    nextTrackIndex: number,
-    controller: AbortController,
-  ) {
-    const nextTrack = nextTape.tracks[nextTrackIndex];
-    if (
-      spotifyPlayer.status !== 'ready' ||
-      !spotifyPlayer.deviceId ||
-      !nextTape.spotifyUri ||
-      !nextTrack?.spotifyUri
-    ) {
-      if (isCurrentPlaybackOperation(controller)) {
-        showSpotifyConnection(
-          'El reproductor de Spotify todavía no está listo.',
-        );
-        finishPlaybackOperation(controller);
-      }
-      return;
-    }
-
-    try {
-      spotifyDispatch({ type: 'error-changed', error: null });
-      requestedTrackUri.current = nextTrack.spotifyUri;
-      await playSpotifyTrack(
-        spotifyPlayer.deviceId,
-        nextTape.spotifyUri,
-        nextTrack.spotifyUri,
-        controller.signal,
-      );
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      requestedTrackUri.current = null;
-      showSpotifyConnection(
-        error instanceof Error ? error.message : 'No se pudo iniciar la pista.',
-      );
-    } finally {
-      finishPlaybackOperation(controller);
-    }
-  }
-
   async function togglePlayback() {
     if (ejected) return;
     if (!playableTape) {
       showSpotifyConnection();
       return;
     }
-    if (spotifyPlayer.status !== 'ready') {
-      showSpotifyConnection('El reproductor de Spotify todavía no está listo.');
-      return;
-    }
-
-    const controller = beginPlaybackOperation();
-    try {
-      spotifyDispatch({ type: 'error-changed', error: null });
-      await spotifyPlayer.activate();
-      if (!isCurrentPlaybackOperation(controller)) return;
-      if (!currentTrackMatches) {
-        await startTrack(tape, trackIndex, controller);
-      } else if (spotifyPlayer.isPlaying) {
-        await spotifyPlayer.pause();
-      } else {
-        await spotifyPlayer.resume();
-      }
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      showSpotifyConnection(
-        error instanceof Error ? error.message : 'Spotify no pudo reproducir.',
-      );
-    } finally {
-      finishPlaybackOperation(controller);
-    }
+    await playback.toggleTrack(tape, trackIndex, currentTrackMatches);
   }
 
   function cue(direction: 1 | -1) {
@@ -715,12 +1236,12 @@ function App() {
       return;
     }
 
-    const controller = beginPlaybackOperation();
+    const controller = playback.beginPlaybackOperation();
     void spotifyPlayer.activate().catch((error: unknown) => {
-      if (!isCurrentPlaybackOperation(controller)) return;
+      if (!playback.isCurrentPlaybackOperation(controller)) return;
       clearMotionTimer();
       dispatch({ type: 'cue-cancel' });
-      cancelPlaybackOperation();
+      playback.cancelPlaybackOperation();
       showSpotifyConnection(
         error instanceof Error ? error.message : 'Spotify no pudo reproducir.',
       );
@@ -732,20 +1253,20 @@ function App() {
     );
     dispatch({ type: 'cue-start', direction });
     motionTimer.current = window.setTimeout(() => {
-      if (!isCurrentPlaybackOperation(controller)) return;
+      if (!playback.isCurrentPlaybackOperation(controller)) return;
       dispatch({
         type: 'cue-complete',
         direction,
         trackCount: tape.tracks.length,
       });
       motionTimer.current = null;
-      void startTrack(tape, nextTrackIndex, controller);
+      void playback.startTrack(tape, nextTrackIndex, controller);
     }, 720);
   }
 
   function selectTape(index: number) {
     clearMotionTimer();
-    cancelPlaybackOperation();
+    playback.cancelPlaybackOperation();
     if (connected) void spotifyPlayer.pause();
     dispatch({ type: 'select-tape', tapeIndex: index });
     setFavorite(false);
@@ -753,7 +1274,7 @@ function App() {
 
   function toggleEject() {
     clearMotionTimer();
-    cancelPlaybackOperation();
+    playback.cancelPlaybackOperation();
     if (!ejected && connected) void spotifyPlayer.pause();
     dispatch({ type: 'toggle-eject' });
   }
@@ -769,20 +1290,7 @@ function App() {
   }
 
   async function toggleShuffle() {
-    if (!spotifyPlayer.deviceId || spotifyPlayer.status !== 'ready') {
-      showSpotifyConnection();
-      return;
-    }
-    const nextShuffle = !spotifyPlayer.shuffle;
-    try {
-      await setSpotifyShuffle(spotifyPlayer.deviceId, nextShuffle);
-    } catch (error) {
-      showSpotifyConnection(
-        error instanceof Error
-          ? error.message
-          : 'No se pudo cambiar la mezcla.',
-      );
-    }
+    await playback.toggleShuffle();
   }
 
   const providerError =
@@ -794,360 +1302,52 @@ function App() {
 
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="#top" aria-label="Cassette Player, inicio">
-          <span className="brand__mark">
-            <Rewind size={18} strokeWidth={2.4} />
-          </span>
-          <span>
-            CASSETTE <b>PLAYER</b>
-          </span>
-        </a>
-        <div className="topbar__middle" aria-hidden="true">
-          PLAYBACK DEPT. / UNIT 04
-        </div>
-        <nav className="topbar__actions" aria-label="Acciones principales">
-          <button
-            className="text-button"
-            type="button"
-            onClick={() => setModalOpen(true)}
-          >
-            <Link2 size={15} />{' '}
-            {connected
-              ? spotifyPlayer.status === 'ready'
-                ? 'SPOTIFY ACTIVO'
-                : 'PREPARANDO SPOTIFY'
-              : sessionStatus === 'checking'
-                ? 'COMPROBANDO FUENTE'
-                : 'CONECTAR FUENTE'}
-          </button>
-          <button className="icon-button" aria-label="Ayuda" type="button">
-            <CircleHelp size={17} />
-          </button>
-        </nav>
-      </header>
-
-      <section className="hero" id="top">
-        <div className="hero__intro">
-          <span className="eyebrow">NOW IN THE DECK</span>
-          <h1>
-            La música se hizo
-            <br />
-            para <em>tocarla.</em>
-          </h1>
-          <p>
-            Una colección digital con alma analógica. Elige un casete, baja PLAY
-            y deja que giren los carretes.
-          </p>
-        </div>
-
-        <div className="status-card">
-          <span className={`status-led ${isPlaying ? 'is-on' : ''}`} />
-          <div>
-            <small>
-              {ejected
-                ? 'DECK OPEN'
-                : connected && visibleLibraryStatus === 'loading'
-                  ? 'SYNCING LIBRARY'
-                  : connected && visibleLibraryStatus === 'error'
-                    ? 'SOURCE ERROR'
-                    : isPlaying
-                      ? 'TAPE RUNNING'
-                      : connected
-                        ? 'TAPE READY'
-                        : 'DEMO READY'}
-            </small>
-            <strong>
-              {ejected
-                ? 'Elige un casete'
-                : connected && visibleLibraryStatus === 'loading'
-                  ? 'Cargando álbumes'
-                  : connected && library.length === 0
-                    ? 'Sin álbumes guardados'
-                    : `${tape.side} / ${trackIndex + 1}`}
-            </strong>
-          </div>
-          <span className="status-card__number">
-            {String(tapeIndex + 1).padStart(2, '0')}
-          </span>
-        </div>
-      </section>
-
-      <section className="player-area" aria-label="Reproductor de casete">
-        <div className="deck-shadow" />
-        <div className="deck">
-          <Screw className="deck__screw deck__screw--tl" />
-          <Screw className="deck__screw deck__screw--tr" />
-          <Screw className="deck__screw deck__screw--bl" />
-          <Screw className="deck__screw deck__screw--br" />
-
-          <div className="deck__topline">
-            <div>
-              <b>RR–420</b>
-              <span>STEREO CASSETTE DECK</span>
-            </div>
-            <div className="deck__topline-right">
-              <span>AUTO REVERSE</span>
-              <i>∞</i>
-            </div>
-          </div>
-
-          <div className="deck__face">
-            <div className="deck__left-controls">
-              <button
-                type="button"
-                className={`square-control ${dolby ? 'is-pressed' : ''}`}
-                onClick={() => setDolby((value) => !value)}
-                aria-pressed={dolby}
-              >
-                <Settings2 size={16} />
-                <span>DOLBY NR</span>
-              </button>
-              <div className="level-meter" aria-label="Nivel de señal">
-                <span>L</span>
-                <div className="level-meter__track">
-                  {Array.from({ length: 10 }, (_, index) => (
-                    <i
-                      key={index}
-                      className={isPlaying && index < 7 ? 'is-lit' : ''}
-                    />
-                  ))}
-                </div>
-                <span>R</span>
-                <div className="level-meter__track">
-                  {Array.from({ length: 10 }, (_, index) => (
-                    <i
-                      key={index}
-                      className={isPlaying && index < 5 ? 'is-lit' : ''}
-                    />
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className={`tape-bay ${ejected ? 'is-open' : ''}`}>
-              <div className="tape-bay__inside">
-                <span>INSERT TAPE</span>
-                <div className="bay-spindles">
-                  <i />
-                  <i />
-                </div>
-              </div>
-              <Cassette
-                tape={tape}
-                playing={isPlaying}
-                motion={motion}
-                ejected={ejected}
-              />
-              <div className="tape-bay__glass" />
-            </div>
-
-            <div className="deck__right-controls">
-              <span className="counter-label">TAPE COUNTER</span>
-              <div className="counter-display">
-                <span>{formatTime(currentTime)}</span>
-                <small>{remaining}</small>
-              </div>
-              <label className="volume-control">
-                <span>
-                  <Volume2 size={14} /> OUTPUT
-                </span>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={volume}
-                  onChange={(event) => changeVolume(Number(event.target.value))}
-                  style={{ '--range-progress': `${volume}%` } as CSSProperties}
-                />
-              </label>
-            </div>
-          </div>
-
-          <div className="progress-wrap">
-            <div className="progress-meta">
-              <span>
-                {String(trackIndex + 1).padStart(2, '0')} — {track.title}
-              </span>
-              <span>{formatTime(duration)}</span>
-            </div>
-            <input
-              className="progress-input"
-              type="range"
-              min="0"
-              max={duration}
-              value={currentTime}
-              onChange={(event) => seek(Number(event.target.value))}
-              style={{ '--range-progress': `${progress}%` } as CSSProperties}
-              aria-label="Posición de reproducción"
-              disabled={ejected || !currentTrackMatches}
-            />
-          </div>
-
-          <div className="transport-row">
-            <div className="transport-labels" aria-hidden="true">
-              <span>POWER</span>
-              <span>REW</span>
-              <span>PLAY</span>
-              <span>F.FWD</span>
-              <span>EJECT</span>
-            </div>
-            <button
-              className="power-button"
-              aria-label="Encendido"
-              type="button"
-            >
-              <span />
-            </button>
-            <TransportButton
-              label="Pista anterior, rebobinar"
-              onClick={() => cue(-1)}
-            >
-              <Rewind size={22} fill="currentColor" />
-            </TransportButton>
-            <TransportButton
-              label={isPlaying ? 'Pausar' : 'Reproducir'}
-              active={isPlaying}
-              onClick={() => void togglePlayback()}
-            >
-              {isPlaying ? (
-                <Pause size={23} fill="currentColor" />
-              ) : (
-                <Play size={23} fill="currentColor" />
-              )}
-            </TransportButton>
-            <TransportButton
-              label="Pista siguiente, avance rápido"
-              onClick={() => cue(1)}
-            >
-              <FastForward size={22} fill="currentColor" />
-            </TransportButton>
-            <TransportButton
-              label={ejected ? 'Cerrar casetera' : 'Expulsar casete'}
-              onClick={toggleEject}
-            >
-              <PanelTopOpen size={22} />
-            </TransportButton>
-          </div>
-        </div>
-
-        <div className="now-playing">
-          <div className="now-playing__track">
-            <span className="eyebrow">PLAYING NOW</span>
-            <h2>{track.title}</h2>
-            <p>
-              {track.artist} · {tape.title}
-            </p>
-          </div>
-          <div className="now-playing__actions">
-            <button
-              type="button"
-              className={shuffle ? 'is-active' : ''}
-              onClick={() => void toggleShuffle()}
-              aria-label="Mezclar"
-              aria-pressed={shuffle}
-            >
-              <Shuffle size={18} />
-            </button>
-            <button
-              type="button"
-              className={favorite ? 'is-active' : ''}
-              onClick={() => setFavorite((value) => !value)}
-              aria-label="Favorito"
-              aria-pressed={favorite}
-            >
-              <Heart size={19} fill={favorite ? 'currentColor' : 'none'} />
-            </button>
-            <button type="button" aria-label="Cola de reproducción">
-              <ListMusic size={19} />
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <section className="shelf-section" aria-labelledby="shelf-title">
-        <div className="section-heading">
-          <div>
-            <span className="eyebrow">YOUR TAPE SHELF</span>
-            <h2 id="shelf-title">Elige qué poner</h2>
-          </div>
-          <div className="shelf-controls" aria-hidden="true">
-            <ChevronLeft size={18} />
-            <span>{String(library.length).padStart(2, '0')} CASSETTES</span>
-            <ChevronRight size={18} />
-          </div>
-        </div>
-
-        <div className="tape-grid">
-          {connected && visibleLibraryStatus === 'loading' ? (
-            <div className="tape-grid__state" role="status">
-              <Radio size={22} />
-              <strong>Sincronizando tu estantería</strong>
-              <span>Buscando los álbumes guardados en Spotify.</span>
-            </div>
-          ) : connected && visibleLibraryStatus === 'error' ? (
-            <div className="tape-grid__state is-error" role="alert">
-              <Radio size={22} />
-              <strong>No pudimos cargar tus álbumes</strong>
-              <span>Abre la conexión para revisar el error.</span>
-            </div>
-          ) : connected && library.length === 0 ? (
-            <div className="tape-grid__state" role="status">
-              <Radio size={22} />
-              <strong>Tu estantería está vacía</strong>
-              <span>Guarda un álbum en Spotify y vuelve a conectar.</span>
-            </div>
-          ) : (
-            library.map((item, index) => (
-              <button
-                className={`tape-card ${index === tapeIndex && !ejected ? 'is-selected' : ''}`}
-                key={item.id}
-                onClick={() => selectTape(index)}
-                type="button"
-                aria-label={`Cargar ${item.title} de ${item.artist}`}
-              >
-                <div className="tape-card__case">
-                  <AlbumArt tape={item} />
-                  <div className="tape-card__spine">
-                    <span>{item.artist}</span>
-                    <b>{item.title}</b>
-                    <small>{item.year}</small>
-                  </div>
-                </div>
-                <div className="tape-card__caption">
-                  <span>{String(index + 1).padStart(2, '0')}</span>
-                  <div>
-                    <strong>{item.title}</strong>
-                    <small>{item.artist}</small>
-                  </div>
-                </div>
-              </button>
-            ))
-          )}
-        </div>
-      </section>
-
-      <section className="provider-strip">
-        <div className="provider-strip__icon">
-          <Bluetooth size={23} />
-        </div>
-        <div>
-          <span className="eyebrow">DIGITAL SOURCE / ANALOG SOUL</span>
-          <h2>
-            {connected && visibleLibraryStatus === 'loading'
-              ? 'Rebobinando tu biblioteca.'
-              : connected && spotifyPlayer.status === 'ready'
-                ? 'Tu biblioteca está lista.'
-                : connected
-                  ? 'Preparando el reproductor.'
-                  : 'Tus álbumes también caben aquí.'}
-          </h2>
-        </div>
-        <button type="button" onClick={() => setModalOpen(true)}>
-          {connected ? 'GESTIONAR CONEXIÓN' : 'CONECTAR SPOTIFY'}{' '}
-          <ChevronRight size={17} />
-        </button>
-      </section>
+      <PageHeader
+        connected={connected}
+        ejected={ejected}
+        isPlaying={isPlaying}
+        libraryCount={library.length}
+        libraryStatus={visibleLibraryStatus}
+        onOpenProvider={() => setModalOpen(true)}
+        playerStatus={spotifyPlayer.status}
+        sessionStatus={sessionStatus}
+        tape={tape}
+        tapeIndex={tapeIndex}
+        trackIndex={trackIndex}
+      />
+      <PlayerArea
+        currentTime={currentTime}
+        currentTrackMatches={currentTrackMatches}
+        dolby={dolby}
+        duration={duration}
+        ejected={ejected}
+        favorite={favorite}
+        isPlaying={isPlaying}
+        motion={motion}
+        onChangeVolume={changeVolume}
+        onCue={cue}
+        onSeek={seek}
+        onToggleDolby={() => setDolby((value) => !value)}
+        onToggleEject={toggleEject}
+        onToggleFavorite={() => setFavorite((value) => !value)}
+        onTogglePlayback={togglePlayback}
+        onToggleShuffle={toggleShuffle}
+        shuffle={spotifyPlayer.shuffle}
+        tape={tape}
+        track={track}
+        trackIndex={trackIndex}
+        volume={volume}
+      />
+      <TapeLibrary
+        connected={connected}
+        ejected={ejected}
+        library={library}
+        libraryStatus={visibleLibraryStatus}
+        onOpenProvider={() => setModalOpen(true)}
+        onSelectTape={selectTape}
+        playerStatus={spotifyPlayer.status}
+        tapeIndex={tapeIndex}
+      />
 
       <footer>
         <span>© 2026 CASSETTE PLAYER AUDIO CLUB</span>
