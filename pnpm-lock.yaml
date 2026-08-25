@@ -8,19 +8,19 @@ importers:
   .:
     dependencies:
       '@fontsource/barlow-condensed':
-        specifier: ^5.2.8
+        specifier: ^5.3.0
         version: 5.3.0
       '@fontsource/ibm-plex-mono':
-        specifier: ^5.2.8
+        specifier: ^5.3.0
         version: 5.3.0
       lucide-react:
         specifier: ^0.468.0
         version: 0.468.0(react@19.2.8)
       react:
-        specifier: ^19.2.0
+        specifier: ^19.2.8
         version: 19.2.8
       react-dom:
-        specifier: ^19.2.0
+        specifier: ^19.2.8
         version: 19.2.8(react@19.2.8)
     devDependencies:
       '@eslint/js':
@@ -33,46 +33,46 @@ importers:
         specifier: ^16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@testing-library/user-event':
-        specifier: ^14.6.1
+        specifier: ^14.6.5
         version: 14.6.5(@testing-library/dom@10.4.1)
       '@types/react':
-        specifier: ^19.2.0
+        specifier: ^19.2.18
         version: 19.2.18
       '@types/react-dom':
-        specifier: ^19.2.0
+        specifier: ^19.2.4
         version: 19.2.4(@types/react@19.2.18)
       '@vitejs/plugin-react':
         specifier: ^6.0.5
         version: 6.0.5(vite@8.2.1)
       eslint:
-        specifier: ^10.0.0
+        specifier: ^10.8.1
         version: 10.8.1
       eslint-plugin-react-hooks:
-        specifier: ^7.1.0
+        specifier: ^7.1.1
         version: 7.1.1(eslint@10.8.1)
       eslint-plugin-react-refresh:
-        specifier: ^0.5.0
+        specifier: ^0.5.4
         version: 0.5.4(eslint@10.8.1)
       globals:
         specifier: ^17.11.0
         version: 17.11.0
       jsdom:
-        specifier: ^30.0.0
+        specifier: ^30.0.1
         version: 30.0.1
       prettier:
-        specifier: ^3.9.0
+        specifier: ^3.9.6
         version: 3.9.6
       typescript:
-        specifier: ^6.0.0
+        specifier: ^6.0.3
         version: 6.0.3
       typescript-eslint:
         specifier: ^8.67.0
         version: 8.67.0(eslint@10.8.1)(typescript@6.0.3)
       vite:
-        specifier: ^8.2.0
+        specifier: ^8.2.1
         version: 8.2.1
       vitest:
-        specifier: ^4.1.0
+        specifier: ^4.1.11
         version: 4.1.11(jsdom@30.0.1)(vite@8.2.1)
 
 packages:
